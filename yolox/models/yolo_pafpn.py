@@ -93,6 +93,13 @@ class YOLOPAFPN(nn.Module):
         out_features = self.backbone(input)
         features = [out_features[f] for f in self.in_features]
         [x2, x1, x0] = features
+        # print('x2', x2.shape)
+        # print('x1', x1.shape)
+        # print('x0', x0.shape)
+        # x2 torch.Size([1, 256, 40, 40]), 1/8
+        # x1 torch.Size([1, 512, 20, 20]), 1/16
+        # x0 torch.Size([1, 1024, 10, 10]), 1/32
+        # breakpoint()
 
         fpn_out0 = self.lateral_conv0(x0)  # 1024->512/32
         f_out0 = self.upsample(fpn_out0)  # 512/16
