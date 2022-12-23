@@ -429,7 +429,7 @@ class YOLOXHead(nn.Module):
                 cls_target = F.one_hot(
                     gt_matched_classes.to(torch.int64), self.num_classes
                 ) * pred_ious_this_matching.unsqueeze(-1)
-                # (A, 1)
+                # (A, 1), dynamic k judge pos/neg here.
                 obj_target = fg_mask.unsqueeze(-1)
                 # (MA*, 4)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
@@ -455,24 +455,28 @@ class YOLOXHead(nn.Module):
         reg_targets = torch.cat(reg_targets, 0)
         # (SUM(A * batch size), 1)
         obj_targets = torch.cat(obj_targets, 0)
-        # (SUM(A * batch size),)
+        # (SUM(A * batch size),), equivalent to obj_targets.
         fg_masks = torch.cat(fg_masks, 0)
         if self.use_l1:
             l1_targets = torch.cat(l1_targets, 0)
 
         num_fg = max(num_fg, 1)
+        # Foreground only.
         loss_iou = (
             self.iou_loss(bbox_preds.view(-1, 4)[fg_masks], reg_targets)
         ).sum() / num_fg
+        # Foreground AND BACKGROUND!
         loss_obj = (
             self.bcewithlog_loss(obj_preds.view(-1, 1), obj_targets)
         ).sum() / num_fg
+        # Foreground only.
         loss_cls = (
             self.bcewithlog_loss(
                 cls_preds.view(-1, self.num_classes)[fg_masks], cls_targets
             )
         ).sum() / num_fg
         if self.use_l1:
+            # Foreground only.
             loss_l1 = (
                 self.l1_loss(origin_preds.view(-1, 4)[fg_masks], l1_targets)
             ).sum() / num_fg
