@@ -283,7 +283,9 @@ class YOLOXHead(nn.Module):
         )
         # (1, 1, H, W, 2) -> (1, H * W, 2)
         grid = grid.view(1, -1, 2)
-        # NOTE: Add grid (x, y) offsets.
+        # NOTE: 
+        # 1. Add grid (x, y) offsets.
+        # 2. Sigmoid is removed compared to YOLOv3.
         output[..., :2] = (output[..., :2] + grid) * stride
         # NOTE: Apply exp to (w, h)
         output[..., 2:4] = torch.exp(output[..., 2:4]) * stride
@@ -304,6 +306,7 @@ class YOLOXHead(nn.Module):
         strides = torch.cat(strides, dim=1).type(dtype)
 
         outputs = torch.cat([
+            # NOTE: Double checked, sigmoid is removed.
             (outputs[..., 0:2] + grids) * strides,
             torch.exp(outputs[..., 2:4]) * strides,
             outputs[..., 4:]
