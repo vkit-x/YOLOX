@@ -375,18 +375,31 @@ class YOLOXHead(nn.Module):
                         num_fg_img,
                     ) = self.get_assignments(  # noqa
                         batch_idx,
+                        # L
                         num_gt,
+                        # A
                         total_num_anchors,
+                        # (L, 4)
                         gt_bboxes_per_image,
+                        # (L,)
                         gt_classes,
+                        # (A, 4)
                         bboxes_preds_per_image,
+                        # (1, A)
                         expanded_strides,
+                        # (1, A)
                         x_shifts,
+                        # (1, A)
                         y_shifts,
+                        # (B, A, #cls)
                         cls_preds,
+                        # (B, A, 4)
                         bbox_preds,
+                        # (B, A, 1)
                         obj_preds,
+                        # not used.
                         labels,
+                        # not used.
                         imgs,
                         "cpu",
                     )
@@ -432,7 +445,9 @@ class YOLOXHead(nn.Module):
                 cls_target = F.one_hot(
                     gt_matched_classes.to(torch.int64), self.num_classes
                 ) * pred_ious_this_matching.unsqueeze(-1)
+                # NOTE:
                 # (A, 1), dynamic k judge pos/neg here.
+                # this is boolean.
                 obj_target = fg_mask.unsqueeze(-1)
                 # (MA*, 4)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
@@ -447,6 +462,7 @@ class YOLOXHead(nn.Module):
 
             cls_targets.append(cls_target)
             reg_targets.append(reg_target)
+            # 0.0 or 1.0.
             obj_targets.append(obj_target.to(dtype))
             fg_masks.append(fg_mask)
             if self.use_l1:
@@ -468,7 +484,9 @@ class YOLOXHead(nn.Module):
         loss_iou = (
             self.iou_loss(bbox_preds.view(-1, 4)[fg_masks], reg_targets)
         ).sum() / num_fg
+        # NOTE:
         # Foreground AND BACKGROUND!
+        # So why this is placed in regression branch?
         loss_obj = (
             self.bcewithlog_loss(obj_preds.view(-1, 1), obj_targets)
         ).sum() / num_fg
@@ -598,10 +616,12 @@ class YOLOXHead(nn.Module):
         del cls_preds_
 
         # (L, A*)
+        # The larger, the greater difference.
         cost = (
             pair_wise_cls_loss
             + 3.0 * pair_wise_ious_loss
             # NOTE: (~is_in_boxes_and_center) for either in gt box or in agumented gt box, but not all.
+            # Hence, those are treated as low quality matches.
             + 100000.0 * (~is_in_boxes_and_center)
         )
 
@@ -718,6 +738,8 @@ class YOLOXHead(nn.Module):
 
         # NOTE: "Multi positives" in the paper?
         # And is NOT "center 3×3 area as positives"?
+        # The answer: NO.
+        #  https://github.com/Megvii-BaseDetection/YOLOX/issues/621
         center_radius = 2.5
 
         # (L, A), kind of use center_radius as scale to create bounding box.
@@ -761,6 +783,7 @@ class YOLOXHead(nn.Module):
         # ---------------------------------------------------------------
         matching_matrix = torch.zeros_like(cost, dtype=torch.uint8)
 
+        # NOTE: dynamic k is based on pairwise IOU.
         ious_in_boxes_matrix = pair_wise_ious
         n_candidate_k = min(10, ious_in_boxes_matrix.size(1))
         # (L, min(10, A*))
