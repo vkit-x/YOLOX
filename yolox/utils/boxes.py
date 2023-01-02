@@ -77,6 +77,8 @@ def postprocess(prediction, num_classes, conf_thre=0.7, nms_thre=0.45, class_agn
 
 
 def bboxes_iou(bboxes_a, bboxes_b, xyxy=True):
+    # bboxes_a: (A, 4)
+    # bboxes_b: (B, 4)
     if bboxes_a.shape[1] != 4 or bboxes_b.shape[1] != 4:
         raise IndexError
 
@@ -86,19 +88,28 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True):
         area_a = torch.prod(bboxes_a[:, 2:] - bboxes_a[:, :2], 1)
         area_b = torch.prod(bboxes_b[:, 2:] - bboxes_b[:, :2], 1)
     else:
+        # (A, B, 2), pairwise maximum (left, up)
         tl = torch.max(
+            # (A, 1, 2)
             (bboxes_a[:, None, :2] - bboxes_a[:, None, 2:] / 2),
+            # (B, 2),
             (bboxes_b[:, :2] - bboxes_b[:, 2:] / 2),
         )
+        # (A, B, 2), pairwise minimum (right, down)
         br = torch.min(
             (bboxes_a[:, None, :2] + bboxes_a[:, None, 2:] / 2),
             (bboxes_b[:, :2] + bboxes_b[:, 2:] / 2),
         )
 
+        # (A,)
         area_a = torch.prod(bboxes_a[:, 2:], 1)
+        # (B,)
         area_b = torch.prod(bboxes_b[:, 2:], 1)
+    # (A, B), en[i][j] = 1 -> Ai and Bj overlapped.
     en = (tl < br).type(tl.type()).prod(dim=2)
+    # (A, B), overlapped area.
     area_i = torch.prod(br - tl, 2) * en  # * ((tl < br).all())
+    # IOU.
     return area_i / (area_a[:, None] + area_b - area_i)
 
 

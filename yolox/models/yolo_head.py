@@ -160,6 +160,36 @@ class YOLOXHead(nn.Module):
             reg_feat = reg_conv(reg_x)
             reg_output = self.reg_preds[k](reg_feat)
             obj_output = self.obj_preds[k](reg_feat)
+            # print('k:', k)
+            # print('cls_feat:', cls_feat.shape)
+            # print('cls_output:', cls_output.shape)
+            # print('reg_feat:', reg_feat.shape)
+            # print('reg_output:', reg_output.shape)
+            # print('obj_output:', obj_output.shape)
+            # print('=' * 10)
+            # ==========
+            # k: 0
+            # cls_feat: torch.Size([1, 256, 40, 40])
+            # cls_output: torch.Size([1, 80, 40, 40])
+            # reg_feat: torch.Size([1, 256, 40, 40])
+            # reg_output: torch.Size([1, 4, 40, 40])
+            # obj_output: torch.Size([1, 1, 40, 40])
+            # ==========
+            # k: 1
+            # cls_feat: torch.Size([1, 256, 20, 20])
+            # cls_output: torch.Size([1, 80, 20, 20])
+            # reg_feat: torch.Size([1, 256, 20, 20])
+            # reg_output: torch.Size([1, 4, 20, 20])
+            # obj_output: torch.Size([1, 1, 20, 20])
+            # ==========
+            # k: 2
+            # cls_feat: torch.Size([1, 256, 10, 10])
+            # cls_output: torch.Size([1, 80, 10, 10])
+            # reg_feat: torch.Size([1, 256, 10, 10])
+            # reg_output: torch.Size([1, 4, 10, 10])
+            # obj_output: torch.Size([1, 1, 10, 10])
+            # ==========
+            # breakpoint()
 
             if self.training:
                 output = torch.cat([reg_output, obj_output, cls_output], 1)
@@ -191,14 +221,30 @@ class YOLOXHead(nn.Module):
 
             outputs.append(output)
 
+        # for output in outputs:
+        #     print(output.shape)
+        # 
+        # torch.Size([2, 1600, 85])
+        # torch.Size([2, 400, 85])
+        # torch.Size([2, 100, 85])
+        # NOTE: (B, H * W, 5 + #cls), where (H, W) is the shape of feature map.
+        # Let A = sum of all H * W, 2100.
+        # breakpoint()
+
         if self.training:
             return self.get_losses(
+                # (B, 3, H, W), where (H, W) is the orignal image shape.
                 imgs,
+                # [ (1, H * W), ... ], x/y shifts for anchors in each feature map.
                 x_shifts,
                 y_shifts,
+                # [ (1, H * W), ... ], downsample ratios (8, 16, 32) for anchors in each feature map.
                 expanded_strides,
+                # (B, L, 5), L ground-truth boxes (cls, x, y, w, h) ?(not sure) for each samples in batch.
                 labels,
+                # (B, A, 5 + #cls)
                 torch.cat(outputs, 1),
+                # Not empty if l1 is used.
                 origin_preds,
                 dtype=xin[0].dtype,
             )
@@ -221,16 +267,29 @@ class YOLOXHead(nn.Module):
         hsize, wsize = output.shape[-2:]
         if grid.shape[2:4] != output.shape[2:4]:
             yv, xv = meshgrid([torch.arange(hsize), torch.arange(wsize)])
+            # (1, 1, H, W, 2)
+            # grid[0][0][y][x] -> (x, y)
             grid = torch.stack((xv, yv), 2).view(1, 1, hsize, wsize, 2).type(dtype)
             self.grids[k] = grid
 
+        # n_anchors = 1.
+        # (B, 5 + #cls, H, W) -> (B, 1, 5 + #cls, H, W)
         output = output.view(batch_size, self.n_anchors, n_ch, hsize, wsize)
+        # (B, 1, 5 + #cls, H, W)
+        # -> (B, 1, H, W, 5 + #cls)
+        # -> (B, H * W, 5 + #cls)
         output = output.permute(0, 1, 3, 4, 2).reshape(
             batch_size, self.n_anchors * hsize * wsize, -1
         )
+        # (1, 1, H, W, 2) -> (1, H * W, 2)
         grid = grid.view(1, -1, 2)
+        # NOTE: 
+        # 1. Add grid (x, y) offsets.
+        # 2. Sigmoid is removed compared to YOLOv3.
         output[..., :2] = (output[..., :2] + grid) * stride
+        # NOTE: Apply exp to (w, h)
         output[..., 2:4] = torch.exp(output[..., 2:4]) * stride
+        # NOTE: output[..., 4] is IOU.
         return output, grid
 
     def decode_outputs(self, outputs, dtype):
@@ -247,6 +306,7 @@ class YOLOXHead(nn.Module):
         strides = torch.cat(strides, dim=1).type(dtype)
 
         outputs = torch.cat([
+            # NOTE: Double checked, sigmoid is removed.
             (outputs[..., 0:2] + grids) * strides,
             torch.exp(outputs[..., 2:4]) * strides,
             outputs[..., 4:]
@@ -269,6 +329,7 @@ class YOLOXHead(nn.Module):
         cls_preds = outputs[:, :, 5:]  # [batch, n_anchors_all, n_cls]
 
         # calculate targets
+        # NOTE: invalid labels are set to zeros.
         nlabel = (labels.sum(dim=2) > 0).sum(dim=1)  # number of objects
 
         total_num_anchors = outputs.shape[1]
@@ -297,9 +358,13 @@ class YOLOXHead(nn.Module):
                 obj_target = outputs.new_zeros((total_num_anchors, 1))
                 fg_mask = outputs.new_zeros(total_num_anchors).bool()
             else:
+                # (L, 4)
                 gt_bboxes_per_image = labels[batch_idx, :num_gt, 1:5]
+                # (L,)
                 gt_classes = labels[batch_idx, :num_gt, 0]
+                # (A, 4)
                 bboxes_preds_per_image = bbox_preds[batch_idx]
+                # breakpoint()
 
                 try:
                     (
@@ -310,19 +375,33 @@ class YOLOXHead(nn.Module):
                         num_fg_img,
                     ) = self.get_assignments(  # noqa
                         batch_idx,
+                        # L
                         num_gt,
+                        # A
                         total_num_anchors,
+                        # (L, 4)
                         gt_bboxes_per_image,
+                        # (L,)
                         gt_classes,
+                        # (A, 4)
                         bboxes_preds_per_image,
+                        # (1, A)
                         expanded_strides,
+                        # (1, A)
                         x_shifts,
+                        # (1, A)
                         y_shifts,
+                        # (B, A, #cls)
                         cls_preds,
+                        # (B, A, 4)
                         bbox_preds,
+                        # (B, A, 1)
                         obj_preds,
+                        # not used.
                         labels,
+                        # not used.
                         imgs,
+                        "cpu",
                     )
                 except RuntimeError as e:
                     # TODO: the string might change, consider a better way
@@ -362,10 +441,15 @@ class YOLOXHead(nn.Module):
                 torch.cuda.empty_cache()
                 num_fg += num_fg_img
 
+                # (MA*, #cls)
                 cls_target = F.one_hot(
                     gt_matched_classes.to(torch.int64), self.num_classes
                 ) * pred_ious_this_matching.unsqueeze(-1)
+                # NOTE:
+                # (A, 1), dynamic k judge pos/neg here.
+                # this is boolean.
                 obj_target = fg_mask.unsqueeze(-1)
+                # (MA*, 4)
                 reg_target = gt_bboxes_per_image[matched_gt_inds]
                 if self.use_l1:
                     l1_target = self.get_l1_target(
@@ -378,31 +462,42 @@ class YOLOXHead(nn.Module):
 
             cls_targets.append(cls_target)
             reg_targets.append(reg_target)
+            # 0.0 or 1.0.
             obj_targets.append(obj_target.to(dtype))
             fg_masks.append(fg_mask)
             if self.use_l1:
                 l1_targets.append(l1_target)
 
+        # (SUM(MA* of each sample), #cls)
         cls_targets = torch.cat(cls_targets, 0)
+        # (SUM(MA* of each sample), 4)
         reg_targets = torch.cat(reg_targets, 0)
+        # (SUM(A * batch size), 1)
         obj_targets = torch.cat(obj_targets, 0)
+        # (SUM(A * batch size),), equivalent to obj_targets.
         fg_masks = torch.cat(fg_masks, 0)
         if self.use_l1:
             l1_targets = torch.cat(l1_targets, 0)
 
         num_fg = max(num_fg, 1)
+        # Foreground only.
         loss_iou = (
             self.iou_loss(bbox_preds.view(-1, 4)[fg_masks], reg_targets)
         ).sum() / num_fg
+        # NOTE:
+        # Foreground AND BACKGROUND!
+        # So why this is placed in regression branch?
         loss_obj = (
             self.bcewithlog_loss(obj_preds.view(-1, 1), obj_targets)
         ).sum() / num_fg
+        # Foreground only.
         loss_cls = (
             self.bcewithlog_loss(
                 cls_preds.view(-1, self.num_classes)[fg_masks], cls_targets
             )
         ).sum() / num_fg
         if self.use_l1:
+            # Foreground only.
             loss_l1 = (
                 self.l1_loss(origin_preds.view(-1, 4)[fg_masks], l1_targets)
             ).sum() / num_fg
@@ -432,21 +527,35 @@ class YOLOXHead(nn.Module):
     def get_assignments(
         self,
         batch_idx,
+        # L
         num_gt,
+        # A
         total_num_anchors,
+        # (L, 4)
         gt_bboxes_per_image,
+        # (L,)
         gt_classes,
+        # (A, 4)
         bboxes_preds_per_image,
+        # (1, A)
         expanded_strides,
+        # (1, A)
         x_shifts,
+        # (1, A)
         y_shifts,
+        # (B, A, #cls)
         cls_preds,
+        # (B, A, 4), not used.
         bbox_preds,
+        # (B, A, 1)
         obj_preds,
+        # (B, L, 5), not used.
         labels,
+        # (B, 3, H, W)
         imgs,
         mode="gpu",
     ):
+        # breakpoint()
 
         if mode == "cpu":
             print("------------CPU Mode for This Batch-------------")
@@ -457,6 +566,7 @@ class YOLOXHead(nn.Module):
             x_shifts = x_shifts.cpu()
             y_shifts = y_shifts.cpu()
 
+        # (A,), (L, A*)
         fg_mask, is_in_boxes_and_center = self.get_in_boxes_info(
             gt_bboxes_per_image,
             expanded_strides,
@@ -466,23 +576,30 @@ class YOLOXHead(nn.Module):
             num_gt,
         )
 
+        # (A*, 4)
         bboxes_preds_per_image = bboxes_preds_per_image[fg_mask]
+        # (A*, #cls)
         cls_preds_ = cls_preds[batch_idx][fg_mask]
+        # (A*, 1)
         obj_preds_ = obj_preds[batch_idx][fg_mask]
+        # A*
         num_in_boxes_anchor = bboxes_preds_per_image.shape[0]
 
         if mode == "cpu":
             gt_bboxes_per_image = gt_bboxes_per_image.cpu()
             bboxes_preds_per_image = bboxes_preds_per_image.cpu()
 
+        # (L, A*)
         pair_wise_ious = bboxes_iou(gt_bboxes_per_image, bboxes_preds_per_image, False)
 
+        # (L, A*, #cls)
         gt_cls_per_image = (
             F.one_hot(gt_classes.to(torch.int64), self.num_classes)
             .float()
             .unsqueeze(1)
             .repeat(1, num_in_boxes_anchor, 1)
         )
+        # Loss IOU.
         pair_wise_ious_loss = -torch.log(pair_wise_ious + 1e-8)
 
         if mode == "cpu":
@@ -498,46 +615,69 @@ class YOLOXHead(nn.Module):
             ).sum(-1)
         del cls_preds_
 
+        # (L, A*)
+        # The larger, the greater difference.
         cost = (
             pair_wise_cls_loss
             + 3.0 * pair_wise_ious_loss
+            # NOTE: (~is_in_boxes_and_center) for either in gt box or in agumented gt box, but not all.
+            # Hence, those are treated as low quality matches.
             + 100000.0 * (~is_in_boxes_and_center)
         )
 
         (
+            # MA*
             num_fg,
+            # (MA*,)
             gt_matched_classes,
             pred_ious_this_matching,
             matched_gt_inds,
         ) = self.dynamic_k_matching(cost, pair_wise_ious, gt_classes, num_gt, fg_mask)
         del pair_wise_cls_loss, cost, pair_wise_ious, pair_wise_ious_loss
 
-        if mode == "cpu":
-            gt_matched_classes = gt_matched_classes.cuda()
-            fg_mask = fg_mask.cuda()
-            pred_ious_this_matching = pred_ious_this_matching.cuda()
-            matched_gt_inds = matched_gt_inds.cuda()
+        # NOTE: comment for debug.
+        # if mode == "cpu":
+        #     gt_matched_classes = gt_matched_classes.cuda()
+        #     fg_mask = fg_mask.cuda()
+        #     pred_ious_this_matching = pred_ious_this_matching.cuda()
+        #     matched_gt_inds = matched_gt_inds.cuda()
 
         return (
+            # (MA*,)
             gt_matched_classes,
+            # (A,)
             fg_mask,
+            # (MA*,)
             pred_ious_this_matching,
+            # (MA*,)
             matched_gt_inds,
+            # MA*
             num_fg,
         )
 
     def get_in_boxes_info(
         self,
+        # (L, 4), (x, y, w, h)
         gt_bboxes_per_image,
+        # (1, A)
         expanded_strides,
+        # (1, A)
         x_shifts,
+        # (1, A)
         y_shifts,
+        # A
         total_num_anchors,
+        # L
         num_gt,
     ):
+        # breakpoint()
+
+        # (A,)
         expanded_strides_per_image = expanded_strides[0]
+        # NOTE: x/y shifts are defined in feature map scale.
         x_shifts_per_image = x_shifts[0] * expanded_strides_per_image
         y_shifts_per_image = y_shifts[0] * expanded_strides_per_image
+        # (1, A), the centers for each anchor.
         x_centers_per_image = (
             (x_shifts_per_image + 0.5 * expanded_strides_per_image)
             .unsqueeze(0)
@@ -548,10 +688,16 @@ class YOLOXHead(nn.Module):
             .unsqueeze(0)
             .repeat(num_gt, 1)
         )
+        # breakpoint()
 
+        # NOTE: (x, y) is the center of box.
+        # (L, A), expand each label up/down/left/right A times.
         gt_bboxes_per_image_l = (
+            # (L,)
             (gt_bboxes_per_image[:, 0] - 0.5 * gt_bboxes_per_image[:, 2])
+            # (L, 1)
             .unsqueeze(1)
+            # (L, A)
             .repeat(1, total_num_anchors)
         )
         gt_bboxes_per_image_r = (
@@ -570,18 +716,34 @@ class YOLOXHead(nn.Module):
             .repeat(1, total_num_anchors)
         )
 
+        # NOTE: pretty expensive.
+        # (L, A)
+        # Calculate the delta between the center x of anchor and gt left & right.
         b_l = x_centers_per_image - gt_bboxes_per_image_l
         b_r = gt_bboxes_per_image_r - x_centers_per_image
+        # Calculate the delta between the center y of anchor and gt up & down.
         b_t = y_centers_per_image - gt_bboxes_per_image_t
         b_b = gt_bboxes_per_image_b - y_centers_per_image
+        # (L, A, 4), deltas of left, right, up, down
         bbox_deltas = torch.stack([b_l, b_t, b_r, b_b], 2)
 
+        # All positive -> the center of anchor in ground-truth labeling box.
+        # (L, A), is_in_boxes[i][j] for the center of anchor j in labeling box i.
         is_in_boxes = bbox_deltas.min(dim=-1).values > 0.0
+        # NOTE:
+        # (A,), is_in_boxes_all[j] for the center of anchor j in at least one labeling box.
         is_in_boxes_all = is_in_boxes.sum(dim=0) > 0
         # in fixed center
+        # breakpoint()
 
+        # NOTE: "Multi positives" in the paper?
+        # And is NOT "center 3×3 area as positives"?
+        # The answer: NO.
+        #  https://github.com/Megvii-BaseDetection/YOLOX/issues/621
         center_radius = 2.5
 
+        # (L, A), kind of use center_radius as scale to create bounding box.
+        # The only difference is to use (center_radius * upsampling ratio) as height / width.
         gt_bboxes_per_image_l = (gt_bboxes_per_image[:, 0]).unsqueeze(1).repeat(
             1, total_num_anchors
         ) - center_radius * expanded_strides_per_image.unsqueeze(0)
@@ -601,11 +763,16 @@ class YOLOXHead(nn.Module):
         c_b = gt_bboxes_per_image_b - y_centers_per_image
         center_deltas = torch.stack([c_l, c_t, c_r, c_b], 2)
         is_in_centers = center_deltas.min(dim=-1).values > 0.0
+        # (A,), is_in_centers_all[j] for the center of anchor j in at least one *generated* labeling box.
         is_in_centers_all = is_in_centers.sum(dim=0) > 0
 
         # in boxes and in centers
+        # NOTE: in labeling box OR in the center of labeling box.
+        # (A,)
+        # A* = sum(is_in_boxes_anchor)
         is_in_boxes_anchor = is_in_boxes_all | is_in_centers_all
 
+        # (L, A*), in labeling box AND in the center of labeling box.
         is_in_boxes_and_center = (
             is_in_boxes[:, is_in_boxes_anchor] & is_in_centers[:, is_in_boxes_anchor]
         )
@@ -616,12 +783,16 @@ class YOLOXHead(nn.Module):
         # ---------------------------------------------------------------
         matching_matrix = torch.zeros_like(cost, dtype=torch.uint8)
 
+        # NOTE: dynamic k is based on pairwise IOU.
         ious_in_boxes_matrix = pair_wise_ious
         n_candidate_k = min(10, ious_in_boxes_matrix.size(1))
+        # (L, min(10, A*))
         topk_ious, _ = torch.topk(ious_in_boxes_matrix, n_candidate_k, dim=1)
+        # (L,), use int(sum of IOU) to define dynamic k.
         dynamic_ks = torch.clamp(topk_ious.sum(1).int(), min=1)
         dynamic_ks = dynamic_ks.tolist()
         for gt_idx in range(num_gt):
+            # dynamic k samllest costs as positive samples.
             _, pos_idx = torch.topk(
                 cost[gt_idx], k=dynamic_ks[gt_idx], largest=False
             )
@@ -629,19 +800,28 @@ class YOLOXHead(nn.Module):
 
         del topk_ious, dynamic_ks, pos_idx
 
+        # (A*,)
         anchor_matching_gt = matching_matrix.sum(0)
         if (anchor_matching_gt > 1).sum() > 0:
+            # At least one anchor match multiple ground-truths.
             _, cost_argmin = torch.min(cost[:, anchor_matching_gt > 1], dim=0)
+            # Keep only the minimum ones.
             matching_matrix[:, anchor_matching_gt > 1] *= 0
             matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1
+        # (A*,), flags for matched anchors.
         fg_mask_inboxes = matching_matrix.sum(0) > 0
+        # MA*
         num_fg = fg_mask_inboxes.sum().item()
 
+        # Update valid anchors in-place, this changes A*.
         fg_mask[fg_mask.clone()] = fg_mask_inboxes
 
+        # Select mached gt classes.
+        # (MA*,)
         matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
         gt_matched_classes = gt_classes[matched_gt_inds]
 
+        # (MA*,), selected matched IOU.
         pred_ious_this_matching = (matching_matrix * pair_wise_ious).sum(0)[
             fg_mask_inboxes
         ]
