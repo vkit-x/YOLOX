@@ -28,7 +28,7 @@ def show():
     exp = ExpX()
     model = exp.get_model()
     num_backbone_params = get_num_params(model.backbone)
-    # L: 46599040
+    # L: 46599040 (close to convnext small)
     # X: 87204000 (match convnext base)
     print('num_backbone_params', num_backbone_params)
 
